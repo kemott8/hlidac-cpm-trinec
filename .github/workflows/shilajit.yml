@@ -1,0 +1,38 @@
+name: Hlídač ceny Shilajit 100 g
+
+on:
+  schedule:
+    # Každé 4 hodiny (UTC).
+    - cron: "41 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hlidac-shilajit
+  cancel-in-progress: false
+
+jobs:
+  cena:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Kontrola ceny
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_EMAIL: ${{ secrets.NTFY_EMAIL }}
+        run: python3 hlidac_shilajit.py
+
+      - name: Uložit stav
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain -- state_shilajit.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state_shilajit.json
+            git commit -m "Cena Shilajit $(TZ=Europe/Prague date '+%F %H:%M')"
+            git pull --rebase --quiet && git push --quiet
+          fi
