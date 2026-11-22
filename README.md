@@ -1,32 +1,31 @@
-# Hlídač registrace CPM Třinec
+# Hlídače (CPM Třinec + cena Shilajit)
 
-Každých ~15 minut kontroluje web [Centra preventivní medicíny](https://cpm.npo.agel.cz/moznosti-prihlaseni)
-a pošle push notifikaci do aplikace **ntfy**, jakmile se u pracoviště Třinec něco změní.
+Dva hlídače běžící zdarma v GitHub Actions. Notifikace chodí do aplikace **ntfy** – jen když se opravdu něco děje, žádné denní zprávy.
 
-## Co se hlídá
+## 1. Registrace CPM Třinec (každých ~15 min)
 
-- text záložky **Pracoviště Třinec** na stránce Možnosti přihlášení,
-- dotazníky na `dotazniky.agel.cz` (`npo/cpm`, `NPO/cpm-trinec` a každý nový odkaz, který se na webu objeví; Ostrava se ignoruje).
+Hlídá [Možnosti přihlášení](https://cpm.npo.agel.cz/moznosti-prihlaseni) – text záložky **Pracoviště Třinec**
+a dotazníky na `dotazniky.agel.cz` (`npo/cpm`, `NPO/cpm-trinec` a každý nový odkaz; Ostrava se ignoruje).
 
-## Notifikace
-
-| Situace | Priorita |
+| Notifikace | Kdy |
 |---|---|
-| 🔴 Dotazník je otevřený k vyplnění – chodí **při každém běhu**, dokud je otevřený | urgentní |
-| 🔴 U Třince se objevil odkaz na registraci | urgentní |
-| 🟠 Oznámen konkrétní termín (datum / čas) | vysoká |
-| 🟡 Jiná změna textu nebo stavu dotazníku | normální |
-| ⚠️ Web nejde načíst ~1 hodinu | vysoká |
-| ✅ Ranní potvrzení „hlídač běží“ (jednou denně po 8:00) | nízká |
+| 🔴 **Registrace spuštěna** (urgentní) | dotazník je otevřený k vyplnění – první hodinu každých ~15 min, pak jednou za hodinu, dokud je otevřený |
+| 🔴 Registrace nejspíš spuštěna (urgentní) | u Třince se objeví text „registrace je spuštěna / zaregistrujte se“ |
+| 📢 Nové informace (jednou) | změní se text u Třince (např. oznámený termín) nebo stav dotazníku |
 
-## Nastavení
+## 2. Cena IMMORTAL SHILAJIT 100 g (každé 4 hodiny)
 
-- `Settings → Secrets and variables → Actions → NTFY_TOPIC` – název tématu v ntfy.
-- (volitelně) `NTFY_EMAIL` – e-mail, kam ntfy přepošle důležité notifikace.
+Čte cenu 100g varianty z [adamraw.cz](https://www.adamraw.cz/immortal-shilajit-primal-alchemy/?variant=54).
+💰 Notifikace přijde, když je cena **4 679 Kč a méně** (sleva ≥ 10 % z běžných 5 199 Kč) – jednou za akci,
+znovu jen při dalším zlevnění. Historie cen je v `state_shilajit.json`.
+
+## Když něco nefunguje
+
+Když hlídač delší dobu nemůže web načíst (registrace ~1 h, Shilajit ~12 h), běh skončí chybou
+a **GitHub pošle e-mail** – do telefonu nic nechodí.
 
 ## Ovládání
 
-- Ruční kontrola / zkušební notifikace: **Actions → Hlídač CPM Třinec → Run workflow** (zaškrtnout „Poslat zkušební notifikaci“).
-- **Po přihlášení hlídač vypněte:** Actions → Hlídač CPM Třinec → ⋯ → Disable workflow.
-
-Stav z minulého běhu je v `state.json` (commituje se automaticky).
+- Zkušební notifikace: **Actions → Hlídač CPM Třinec → Run workflow** → zaškrtnout „Poslat zkušební notifikaci“.
+- Vypnutí (např. po přihlášení): **Actions → vybrat hlídač → ⋯ → Disable workflow**.
+- Secrets: `NTFY_TOPIC` (téma v ntfy), volitelně `NTFY_EMAIL`.

@@ -224,18 +224,40 @@ def norm(url):
 
 
 # ---------------------------------------------------------------- hlavní běh
+#
+# Notifikace do telefonu chodí jen ve dvou případech:
+#   🔴 registrace je spuštěná (dotazník otevřený k vyplnění) – urgentně, s připomínkami,
+#   📢 na webu se objevila nová informace (změna textu u Třince, nový dotazník, změna stavu dotazníku) – jednou.
+# Žádné denní zprávy. Ostatní se jen zapisuje do logu a state.json.
+# Když hlídač dlouhodobě nemůže načíst web, běh na GitHubu skončí chybou -> GitHub pošle e-mail.
+
+REMIND_EVERY_RUN_MIN = 60      # první hodinu po otevření připomínat při každém běhu (~15 min)
+REMIND_LATER_MIN = 60          # pak už jen jednou za hodinu, dokud je dotazník otevřený
+STRONG_START_RE = re.compile(
+    r"registrace\s+(je|jsou|byla|byly)\s+(spuštěn|otevřen|zahájen)"
+    r"|přihlašování\s+(je|bylo)\s+(spuštěno|otevřeno|zahájeno)"
+    r"|zaregistrujte\s+se", re.I)
+
+
+def minutes_since(iso, now):
+    try:
+        return (now - datetime.datetime.fromisoformat(iso)).total_seconds() / 60
+    except (TypeError, ValueError):
+        return 10 ** 9
+
 
 def main():
     now = datetime.datetime.now(TZ)
-    today = now.strftime("%Y-%m-%d")
     stamp = now.strftime("%d. %m. %Y %H:%M")
     prev = load_state()
-    first_run = prev is None
     state = json.loads(json.dumps(prev)) if prev else {"forms": {}}
     state.setdefault("forms", {})
     state.setdefault("errors", 0)
+    for k in ("last_heartbeat",):
+        state.pop(k, None)
     open_forms = []
     summary = []
+    failed = False
 
     if os.environ.get("TEST_NOTIFY", "").lower() == "true":
         notify("🔔 Test – hlídač CPM Třinec", f"Testovací notifikace ({stamp}). Když tohle čtete, doručování funguje.",
@@ -248,44 +270,25 @@ def main():
             raise RuntimeError(f"HTTP {status}")
     except Exception as e:  # noqa: BLE001
         state["errors"] = state.get("errors", 0) + 1
-        print(f"Chyba načtení hlavní stránky ({state['errors']}× za sebou): {e}")
-        if state["errors"] == ERROR_ALERT_AFTER:
-            notify("⚠️ Hlídač CPM Třinec: web nejde načíst",
-                   f"Stránka {MAIN_URL} se nepodařilo načíst už {ERROR_ALERT_AFTER}× za sebou (poslední chyba: {e}). "
-                   "Zkontrolujte ji prosím ručně.", PRIO_HIGH, tags=["warning"], click=MAIN_URL)
+        summary.append(f"Chyba načtení hlavní stránky ({state['errors']}× za sebou): {e}")
         save_state(state)
-        finish(summary)
+        finish(summary, failed=state["errors"] >= ERROR_ALERT_AFTER)
         return
-
-    if state.get("errors", 0) >= ERROR_ALERT_AFTER:
-        notify("✅ Hlídač CPM Třinec: web je znovu dostupný", f"Načtení funguje ({stamp}).", PRIO_LOW)
     state["errors"] = 0
 
-    # 2) záložka Třinec
+    # 2) záložka Třinec (jen pro log + detekce silného textu o spuštění)
     panel_html = trinec_panel(main_html)
     if panel_html is None:
-        panel_text = "(záložka Pracoviště Třinec nenalezena – web změnil strukturu)"
-        panel_links = []
+        panel_text, panel_links = "(záložka Pracoviště Třinec nenalezena – web změnil strukturu)", []
     else:
-        panel_text = text_of(panel_html)
-        panel_links = dotaznik_links(panel_html, MAIN_URL)
+        panel_text, panel_links = text_of(panel_html), dotaznik_links(panel_html, MAIN_URL)
     summary.append(f"Záložka Třinec: {panel_text[:300]}")
-
     old_panel = state.get("panel_text")
     if old_panel and old_panel.startswith("class="):  # stav z první verze skriptu
         old_panel = old_panel.split(">", 1)[-1].strip()
-    if old_panel is not None and panel_text != old_panel:
-        if panel_links:
-            level, prio, icon = "odkaz na registraci", PRIO_URGENT, "🔴"
-        elif DATE_RE.search(panel_text) or START_RE.search(panel_text):
-            level, prio, icon = "oznámení termínu", PRIO_HIGH, "🟠"
-        else:
-            level, prio, icon = "změna textu", PRIO_DEFAULT, "🟡"
-        notify(f"{icon} CPM Třinec: {level} na webu",
-               f"Text záložky Pracoviště Třinec se změnil ({stamp}):\n\n{panel_text[:700]}"
-               + (f"\n\nOdkaz: {panel_links[0]}" if panel_links else ""),
-               prio, tags=["rotating_light" if prio == PRIO_URGENT else "warning"],
-               click=panel_links[0] if panel_links else MAIN_URL, email=prio >= PRIO_HIGH)
+    panel_changed = old_panel is not None and panel_text != old_panel
+    if panel_changed:
+        summary.append("ZMĚNA textu záložky Třinec (bez notifikace, pokud nejde o spuštění registrace).")
     state["panel_text"] = panel_text
 
     # 3) seznam dotazníků k hlídání
@@ -309,65 +312,68 @@ def main():
         forms.append(u)
 
     # 4) stav dotazníků
+    unknown_panel_forms = []
+    form_news = []
     for url in forms:
         key = norm(url)
         try:
             st, h = fetch(url)
             kind, msg = classify_form(st, h)
         except Exception as e:  # noqa: BLE001
-            print(f"Nepodařilo se načíst {url}: {e}")
             summary.append(f"{url}: nenačteno ({e})")
             continue
         summary.append(f"{url}: {LABEL.get(kind, kind)} – {msg}")
         old = state["forms"].get(key)
         state["forms"][key] = {"url": url, "kind": kind, "msg": msg}
-
+        if prev is not None and kind not in ("OPEN", "ERROR"):
+            if old is None:
+                form_news.append(f"Nový dotazník: {url}\nStav: {LABEL.get(kind, kind)} – {msg}")
+            elif old.get("kind") != "ERROR" and (old.get("kind"), old.get("msg")) != (kind, msg):
+                form_news.append(f"{url}\nDříve: {old.get('msg')}\nNyní: {msg}")
         if kind == "OPEN":
-            open_forms.append(url)
-            # Urgentní notifikace při KAŽDÉM běhu, dokud je dotazník otevřený.
-            notify("🔴 REGISTRACE OTEVŘENA – přihlas se HNED!",
-                   f"Dotazník je dostupný k vyplnění ({stamp}):\n{url}\n\n„{msg}“\n\n"
-                   "Tahle zpráva bude chodit každých ~15 min, dokud je dotazník otevřený. "
+            open_forms.append((url, msg))
+        elif kind == "UNKNOWN" and key in panel_norm:
+            unknown_panel_forms.append(url)
+
+    # 5) jediná notifikace: registrace spuštěna
+    if open_forms:
+        first = state.get("open_since") is None
+        if first:
+            state["open_since"] = now.isoformat(timespec="minutes")
+        since = minutes_since(state["open_since"], now)
+        last = minutes_since(state.get("open_last_notify"), now)
+        if first or since <= REMIND_EVERY_RUN_MIN or last >= REMIND_LATER_MIN - 2:
+            url, msg = open_forms[0]
+            notify("🔴 REGISTRACE CPM TŘINEC SPUŠTĚNA – přihlas se HNED!",
+                   f"Dotazník je otevřený k vyplnění ({stamp}):\n{url}\n\n„{msg}“\n\n"
+                   "Připomínám každých ~15 min první hodinu, pak jednou za hodinu, dokud je otevřený. "
                    "Po přihlášení hlídač vypněte (GitHub → Actions → Hlídač CPM Třinec → Disable workflow).",
-                   PRIO_URGENT, tags=["rotating_light"], click=url,
-                   email=(old is None or old.get("kind") != "OPEN"))
-            continue
-
-        if first_run:
-            continue
-        if old is None:
-            notify("🟡 CPM: nový dotazník na webu",
-                   f"Objevil se nový odkaz na dotazník ({stamp}):\n{url}\nStav: {LABEL.get(kind, kind)} – {msg}",
-                   PRIO_HIGH if kind in ("SCHEDULED", "UNKNOWN") else PRIO_DEFAULT, tags=["mag"], click=url)
-        elif (old.get("kind"), old.get("msg")) != (kind, msg):
-            if kind == "ERROR" or old.get("kind") == "ERROR":
-                continue  # výpadek serveru neohlašujeme jako změnu
-            prio = PRIO_HIGH if kind in ("SCHEDULED", "UNKNOWN") else PRIO_DEFAULT
-            icon = "🟠" if kind == "SCHEDULED" else "🟡"
-            notify(f"{icon} CPM: změna stavu dotazníku",
-                   f"{url}\nDříve: {LABEL.get(old.get('kind'), old.get('kind'))} – {old.get('msg')}\n"
-                   f"Nyní: {LABEL.get(kind, kind)} – {msg}\n({stamp})",
-                   prio, tags=["warning"], click=url, email=prio >= PRIO_HIGH)
-
-    # 5) start a denní potvrzení, že hlídač žije
-    status_lines = "\n".join(f"• {s}" for s in summary)
-    if first_run:
-        notify("🚀 Hlídač CPM Třinec spuštěn",
-               f"Hlídání běží ({stamp}). Výchozí stav:\n{status_lines}\n\n"
-               "Ozvu se při jakékoli změně, každé ráno pošlu krátké potvrzení, že běžím.",
-               PRIO_DEFAULT, tags=["rocket"], click=MAIN_URL)
-        state["last_heartbeat"] = today
-    elif now.hour >= HEARTBEAT_HOUR and state.get("last_heartbeat") != today and not open_forms:
-        notify("✅ Hlídač CPM Třinec běží", f"Ranní kontrola ({stamp}) – beze změny.\n{status_lines}",
-               PRIO_LOW, tags=["white_check_mark"])
-        state["last_heartbeat"] = today
+                   PRIO_URGENT, tags=["rotating_light"], click=url, email=first)
+            state["open_last_notify"] = now.isoformat(timespec="minutes")
+    else:
+        state.pop("open_since", None)
+        state.pop("open_last_notify", None)
+        if panel_changed and (unknown_panel_forms or STRONG_START_RE.search(panel_text)):
+            link = (unknown_panel_forms or panel_links or [MAIN_URL])[0]
+            notify("🔴 CPM Třinec: registrace nejspíš spuštěna – zkontroluj HNED",
+                   f"Na webu se u Třince objevil text/odkaz k registraci ({stamp}):\n\n{panel_text[:600]}\n\n{link}",
+                   PRIO_URGENT, tags=["rotating_light"], click=link, email=True)
+        elif panel_changed:
+            dated = bool(DATE_RE.search(panel_text))
+            notify("📢 CPM Třinec: " + ("oznámen termín" if dated else "nové informace na webu"),
+                   f"Text u Pracoviště Třinec se změnil ({stamp}):\n\n{panel_text[:700]}",
+                   PRIO_HIGH, tags=["loudspeaker"], click=MAIN_URL, email=dated)
+        if form_news:
+            notify("📢 CPM: změna u dotazníku",
+                   f"({stamp})\n\n" + "\n\n".join(form_news)[:900],
+                   PRIO_HIGH, tags=["loudspeaker"], click=MAIN_URL)
 
     if state != prev:
         save_state(state)
-    finish(summary, open_forms)
+    finish(summary, [u for u, _ in open_forms])
 
 
-def finish(summary, open_forms=()):
+def finish(summary, open_forms=(), failed=False):
     print("\n".join(summary))
     out = os.environ.get("GITHUB_STEP_SUMMARY")
     if out:
@@ -378,8 +384,10 @@ def finish(summary, open_forms=()):
     if FAILED_SENDS:
         print("NEPODAŘILO SE ODESLAT NOTIFIKACI:", *FAILED_SENDS, sep="\n  ")
         sys.exit(1)
+    if failed:
+        print(f"Web se nepodařilo načíst {ERROR_ALERT_AFTER}× a víckrát za sebou – běh končí chybou (GitHub pošle e-mail).")
+        sys.exit(1)
     if open_forms:
-        # Červený běh v GitHub Actions = další viditelný signál (GitHub může poslat e-mail o selhání).
         print("REGISTRACE OTEVŘENA:", *open_forms, sep="\n  ")
         sys.exit(2)
 
