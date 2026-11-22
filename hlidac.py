@@ -111,6 +111,7 @@ def trinec_panel(html):
     if not m:
         return None
     rest = html[m.end():]
+    rest = rest[rest.find(">") + 1:]  # přeskočit zbytek otevírací značky <div ...>
     nxt = re.search(r'<div[^>]+id\s*=\s*["\']tab-pane-', rest, re.I)
     end = nxt.start() if nxt else min(len(rest), 6000)
     return rest[:end]
@@ -271,6 +272,8 @@ def main():
     summary.append(f"Záložka Třinec: {panel_text[:300]}")
 
     old_panel = state.get("panel_text")
+    if old_panel and old_panel.startswith("class="):  # stav z první verze skriptu
+        old_panel = old_panel.split(">", 1)[-1].strip()
     if old_panel is not None and panel_text != old_panel:
         if panel_links:
             level, prio, icon = "odkaz na registraci", PRIO_URGENT, "🔴"
