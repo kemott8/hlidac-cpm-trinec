@@ -26,6 +26,8 @@ a **GitHub pošle e-mail** – do telefonu nic nechodí.
 
 ## Ovládání
 
-- Zkušební notifikace: **Actions → Hlídač CPM Třinec → Run workflow** → zaškrtnout „Poslat zkušební notifikaci“.
+- **Test celé cesty:** Actions → Hlídač CPM Třinec → Run workflow → zaškrtnout „Poslat zkušební notifikaci“.
+  Načte skutečný web, podvrhne otevřený dotazník pro Třinec a slevu 15 % na Shilajit a pošle dvě notifikace „🧪 TEST“.
+  Skutečný stav hlídačů se tím nemění.
 - Vypnutí (např. po přihlášení): **Actions → vybrat hlídač → ⋯ → Disable workflow**.
 - Secrets: `NTFY_TOPIC` (téma v ntfy), volitelně `NTFY_EMAIL`.

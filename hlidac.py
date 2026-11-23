@@ -259,10 +259,6 @@ def main():
     summary = []
     failed = False
 
-    if os.environ.get("TEST_NOTIFY", "").lower() == "true":
-        notify("🔔 Test – hlídač CPM Třinec", f"Testovací notifikace ({stamp}). Když tohle čtete, doručování funguje.",
-               PRIO_HIGH, tags=["bell"])
-
     # 1) hlavní stránka
     try:
         status, main_html = fetch(MAIN_URL)
@@ -392,5 +388,62 @@ def finish(summary, open_forms=(), failed=False):
         sys.exit(2)
 
 
+# ---------------------------------------------------------------- zkušební simulace
+#
+# Spustí se ručně: Actions → Hlídač CPM Třinec → Run workflow → zaškrtnout „Poslat zkušební notifikaci“.
+# Načte SKUTEČNÝ web, ale dotazník NPO/cpm-trinec podvrhne jako otevřený, a u Shilajitu podvrhne slevu 15 %
+# ze skutečně přečtené ceny. Pošle tytéž notifikace jako naostro, s předponou „🧪 TEST“. Skutečný stav se nemění.
+
+def simulace():
+    global STATE_FILE, fetch, notify
+    import shutil
+    import tempfile
+
+    real_fetch, real_notify = fetch, notify
+    tmp = os.path.join(tempfile.mkdtemp(), "state.json")
+    if os.path.exists(STATE_FILE):
+        shutil.copy(STATE_FILE, tmp)
+    STATE_FILE = tmp
+    fake_url = norm(KNOWN_FORMS[1])
+
+    def fake_fetch(url, tries=3):
+        if norm(url) == fake_url:
+            return 200, ("<html><body><h1>Vstupní dotazník Centra preventivní medicíny - pracoviště Třinec</h1>"
+                         "<p>SIMULACE: Vážení návštěvníci, tento dotazník je určen dospělým osobám (ve věku nad 18 let) "
+                         "aktivně se zajímajícím o své zdraví. Prosím zkontrolujte si svou emailovou adresu.</p>"
+                         "<form><input type='email' name='email'><input name='rc'></form></body></html>")
+        return real_fetch(url, tries)
+
+    def test_notify(title, *a, **k):
+        k["email"] = False
+        real_notify("🧪 TEST – " + title, *a, **k)
+
+    fetch, notify = fake_fetch, test_notify
+    print("=== SIMULACE: otevřená registrace Třinec ===")
+    try:
+        main()
+    except SystemExit as e:
+        if e.code not in (0, 2, None):
+            raise
+
+    print("\n=== SIMULACE: sleva Shilajit 100 g ===")
+    import hlidac_shilajit as sh
+    sh_tmp = os.path.join(tempfile.mkdtemp(), "state_shilajit.json")
+    sh.STATE_FILE = sh_tmp
+    real_read = sh.read_price
+
+    def fake_read():
+        price, basic, label, url = real_read()
+        print(f"Skutečná cena přečtená z e-shopu: {price} Kč → simuluji {round(price * 0.85)} Kč")
+        return round(price * 0.85), basic, label, url
+
+    sh.read_price = fake_read
+    sh.notify = test_notify
+    sh.main()
+
+
 if __name__ == "__main__":
-    main()
+    if os.environ.get("TEST_NOTIFY", "").lower() == "true":
+        simulace()
+    else:
+        main()
