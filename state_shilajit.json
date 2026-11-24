@@ -1,12 +1,17 @@
 {
-  "errors": 1,
+  "alert_price": 4499,
+  "errors": 0,
   "history": [
     {
       "d": "2026-11-23",
       "p": 5199
+    },
+    {
+      "d": "2026-11-24",
+      "p": 4499
     }
   ],
-  "in_sale": false,
-  "last_check": "2026-11-23",
-  "last_price": 5199
+  "in_sale": true,
+  "last_check": "2026-11-24",
+  "last_price": 4499
 }
