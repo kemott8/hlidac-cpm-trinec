@@ -414,9 +414,13 @@ def simulace():
                          "<form><input type='email' name='email'><input name='rc'></form></body></html>")
         return real_fetch(url, tries)
 
-    def test_notify(title, *a, **k):
+    def test_notify(title, message, *a, **k):
         k["email"] = False
-        real_notify("🧪 TEST – " + title, *a, **k)
+        k.pop("click", None)  # zkušební zpráva nesmí odkazovat na skutečný dotazník
+        real_notify("🧪 JEN ZKOUŠKA, nic není spuštěno – " + title,
+                    "⚠️ TOHLE JE ZKUŠEBNÍ ZPRÁVA ze simulace. Na webu se nic nezměnilo, "
+                    "registrace NENÍ spuštěná a sleva NENÍ skutečná.\n\n"
+                    "Takhle by vypadala skutečná zpráva:\n\n" + message, *a, **k)
 
     fetch, notify = fake_fetch, test_notify
     print("=== SIMULACE: otevřená registrace Třinec ===")
